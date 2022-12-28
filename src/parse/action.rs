@@ -1,8 +1,7 @@
 use walle_core::action::*;
-use walle_core::prelude::{OneBot, PushToValueMap};
+use walle_core::prelude::{PushToValueMap, TryFromAction};
 
-#[derive(Debug, PushToValueMap, OneBot)]
-#[action]
+#[derive(Debug, PushToValueMap, TryFromAction)]
 pub enum KookAction {
     // meta
     GetLatestEvents(GetLatestEvents),

@@ -5,15 +5,24 @@ use once_cell::sync::OnceCell;
 use tokio::task::JoinHandle;
 use walle_core::{
     action::{Action, SendMessage},
-    event::Event,
     prelude::{async_trait, WalleError, WalleResult},
     resp::{resp_error, Resp, RespError},
-    structs::{Selft, Version},
-    ActionHandler, EventHandler, GetSelfs, GetStatus, OneBot,
+    structs::{Selft, SendMessageResp, Version},
+    ActionHandler, EventHandler, GetSelfs, GetStatus, GetVersion, OneBot,
 };
 
-use crate::parse::{event_parse, o2k, KookAction};
+use crate::parse::{event_parse, segments_to_kmd, KookAction};
 
+pub type RespReault = Result<Resp, RespError>;
+
+pub fn to_resp(r: RespReault) -> WalleResult<Resp> {
+    Ok(match r {
+        Ok(r) => r,
+        Err(e) => e.into(),
+    })
+}
+
+#[derive(Default)]
 pub struct KHandler {
     _self_id: OnceCell<String>,
     _kook: OnceCell<Arc<Kook>>,
@@ -50,8 +59,18 @@ impl GetStatus for KHandler {
     }
 }
 
+impl GetVersion for KHandler {
+    fn get_version(&self) -> Version {
+        Version {
+            implt: crate::WALLE_K.to_owned(),
+            version: crate::VERSION.to_owned(),
+            onebot_version: 12.to_string(),
+        }
+    }
+}
+
 #[async_trait]
-impl ActionHandler<Event, Action, Resp> for KHandler {
+impl ActionHandler for KHandler {
     type Config = KookConfig;
     async fn start<AH, EH>(
         &self,
@@ -59,8 +78,8 @@ impl ActionHandler<Event, Action, Resp> for KHandler {
         config: Self::Config,
     ) -> WalleResult<Vec<JoinHandle<()>>>
     where
-        AH: ActionHandler<Event, Action, Resp> + Send + Sync + 'static,
-        EH: EventHandler<Event, Action, Resp> + Send + Sync + 'static,
+        AH: ActionHandler + Send + Sync + 'static,
+        EH: EventHandler + Send + Sync + 'static,
     {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let kook = Arc::new(Kook::new_from_config(config, tx));
@@ -75,9 +94,14 @@ impl ActionHandler<Event, Action, Resp> for KHandler {
         self._kook.set(kook.clone()).ok();
         let ob = ob.clone();
         let mut tasks = vec![];
+        let id = self.self_id();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                ob.handle_event(event_parse(event).await).await.ok();
+                if let Some(event) = event_parse(event, id.clone()).await {
+                    ob.handle_event(event) //todo
+                        .await
+                        .ok();
+                }
             }
         }));
         tasks.push(tokio::spawn(async move {
@@ -85,7 +109,11 @@ impl ActionHandler<Event, Action, Resp> for KHandler {
         }));
         Ok(tasks)
     }
-    async fn call(&self, action: Action) -> WalleResult<Resp> {
+    async fn call<AH, EH>(&self, action: Action, _ob: &Arc<OneBot<AH, EH>>) -> WalleResult<Resp>
+    where
+        AH: ActionHandler + Send + Sync + 'static,
+        EH: EventHandler + Send + Sync + 'static,
+    {
         let a = action.action.clone();
         match KookAction::try_from(action) {
             Ok(action) => match action {
@@ -101,13 +129,12 @@ impl ActionHandler<Event, Action, Resp> for KHandler {
                 .into()),
                 KookAction::GetVersion => Ok(Version {
                     implt: crate::WALLE_K.to_owned(),
-                    platform: kook::KOOK.to_owned(),
                     onebot_version: "12".to_owned(),
                     version: crate::VERSION.to_owned(),
                 }
                 .into()),
 
-                KookAction::SendMessage(c) => self.send_message(c).await,
+                KookAction::SendMessage(c) => to_resp(self.send_message(c).await),
             },
             Err(_) => Ok(resp_error::unsupported_action(a).into()),
         }
@@ -115,14 +142,63 @@ impl ActionHandler<Event, Action, Resp> for KHandler {
 }
 
 impl KHandler {
-    pub async fn send_message(&self, content: SendMessage) -> WalleResult<Resp> {
+    pub async fn send_message(&self, content: SendMessage) -> RespReault {
         match content.detail_type.as_str() {
-            "channel" => match o2k(content.message) {
-                Ok((s, ty)) => todo!(),
-                Err(e) => Ok(e.into()),
-            },
+            "channel" => {
+                if let Some(ref channel_id) = content.channel_id {
+                    match segments_to_kmd(content.message) {
+                        Ok((s, ty)) => {
+                            let r = self
+                                .kook()?
+                                .create_message(
+                                    Some(ty.into()),
+                                    channel_id,
+                                    &s,
+                                    None,
+                                    None, //todo
+                                    None, //todo
+                                )
+                                .await
+                                .map_err(|e| resp_error::bad_handler(e.to_string()))?;
+                            Ok(SendMessageResp {
+                                message_id: r.msg_id,
+                                time: r.msg_timestamp as f64,
+                            }
+                            .into())
+                        }
+                        Err(e) => Ok(e.into()),
+                    }
+                } else {
+                    Err(resp_error::bad_param("channel_id required"))
+                }
+            }
             "private" => {
-                todo!()
+                if let Some(ref user_id) = content.user_id {
+                    match segments_to_kmd(content.message) {
+                        Ok((s, ty)) => {
+                            let r = self
+                                .kook()?
+                                .create_direct_message(
+                                    Some(user_id),
+                                    None,
+                                    &s,
+                                    Some(ty as u8),
+                                    None, //todo
+                                    None, //todo
+                                )
+                                .await
+                                .map_err(|e| resp_error::bad_handler(e.to_string()))?;
+                            Ok(SendMessageResp {
+                                message_id: r.msg_id,
+                                time: r.msg_timestamp as f64,
+                            }
+                            .into())
+                        }
+                        Err(e) => Ok(e.into()),
+                    }
+                } else {
+                    Err(resp_error::bad_param("user_id required"))
+                }
             }
             ty => Ok(resp_error::unsupported_param(format!("detail_type:{}", ty)).into()),
         }
