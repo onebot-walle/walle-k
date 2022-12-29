@@ -5,13 +5,14 @@ use once_cell::sync::OnceCell;
 use tokio::task::JoinHandle;
 use walle_core::{
     action::{Action, SendMessage},
+    alt::ColoredAlt,
     prelude::{async_trait, WalleError, WalleResult},
     resp::{resp_error, Resp, RespError},
     structs::{Selft, SendMessageResp, Version},
     ActionHandler, EventHandler, GetSelfs, GetStatus, GetVersion, OneBot,
 };
 
-use crate::parse::{event_parse, segments_to_kmd, KookAction};
+use crate::parse::{event_parse, segments_to_str, KookAction};
 
 pub type RespReault = Result<Resp, RespError>;
 
@@ -98,6 +99,7 @@ impl ActionHandler for KHandler {
         tasks.push(tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if let Some(event) = event_parse(event, id.clone()).await {
+                    tracing::info!(target: crate::WALLE_K, "{}", event.colored_alt());
                     ob.handle_event(event) //todo
                         .await
                         .ok();
@@ -146,7 +148,7 @@ impl KHandler {
         match content.detail_type.as_str() {
             "channel" => {
                 if let Some(ref channel_id) = content.channel_id {
-                    match segments_to_kmd(content.message) {
+                    match segments_to_str(self.kook()?, content.message).await {
                         Ok((s, ty)) => {
                             let r = self
                                 .kook()?
@@ -174,7 +176,7 @@ impl KHandler {
             }
             "private" => {
                 if let Some(ref user_id) = content.user_id {
-                    match segments_to_kmd(content.message) {
+                    match segments_to_str(self.kook()?, content.message).await {
                         Ok((s, ty)) => {
                             let r = self
                                 .kook()?
