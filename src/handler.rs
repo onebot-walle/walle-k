@@ -164,7 +164,7 @@ impl KHandler {
                                 .map_err(|e| resp_error::bad_handler(e.to_string()))?;
                             Ok(SendMessageResp {
                                 message_id: r.msg_id,
-                                time: r.msg_timestamp as f64,
+                                time: (r.msg_timestamp as f64) / 1000.0,
                             }
                             .into())
                         }
@@ -192,7 +192,7 @@ impl KHandler {
                                 .map_err(|e| resp_error::bad_handler(e.to_string()))?;
                             Ok(SendMessageResp {
                                 message_id: r.msg_id,
-                                time: r.msg_timestamp as f64,
+                                time: (r.msg_timestamp as f64) / 1000.0,
                             }
                             .into())
                         }
