@@ -162,7 +162,7 @@ pub async fn event_parse(event: KookEvent, user_id: String) -> Option<Event> {
                 "self": selft
             },
         }),
-        EventExtra::System(SystemExtra::UpdateMessage {
+        EventExtra::System(SystemExtra::UpdatedMessage {
             channel_id,
             content,
             msg_id,
